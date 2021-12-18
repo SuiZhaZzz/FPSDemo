@@ -33,7 +33,7 @@ public:
 
 	FTimerHandle TriggerTimer;
 
-	UFUNCTION(BlueprintCallable)
+	UFUNCTION()
 	void Trigger();
 
 protected:

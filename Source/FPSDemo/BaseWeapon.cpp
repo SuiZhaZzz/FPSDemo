@@ -10,7 +10,8 @@ ABaseWeapon::ABaseWeapon()
 	Mesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Mesh"));
 	Mesh->SetupAttachment(GetRootComponent());
 
-	Ammo = 20;
+	MaxAmmo = 25;
+	Ammo = MaxAmmo;
 }
 
 // Called when the game starts or when spawned
@@ -25,3 +26,7 @@ void ABaseWeapon::DecrementAmmo()
 	if (Ammo > 0) Ammo--;
 }
 
+void ABaseWeapon::ReloadAmmo()
+{
+	Ammo = MaxAmmo;
+}

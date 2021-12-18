@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FPSDemoCharacter.h"
-#include "HeadMountedDisplayFunctionLibrary.h"
+//#include "HeadMountedDisplayFunctionLibrary.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
@@ -11,11 +11,20 @@
 #include "Engine/SkeletalMeshSocket.h"
 #include "BaseWeapon.h"
 #include "Sound/SoundCue.h"
+#include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Bullet.h"
 #include "Grenade.h"
 #include "Animation/AnimInstance.h"
+#include "Net/UnrealNetwork.h"
+#include "Engine/Engine.h"
+#include "Pickup.h"
+#include "Clip.h"
+#include "GrenBag.h"
+#include "AidBag.h"
+#include "GameFramework/GameStateBase.h"
+#include "GameFramework/PlayerState.h"
 
 //////////////////////////////////////////////////////////////////////////
 // AFPSDemoCharacter
@@ -70,13 +79,44 @@ AFPSDemoCharacter::AFPSDemoCharacter()
 	TargetLagSpeed = 10.f;
 	TPSocketOffset = FVector::ZeroVector;
 
+	// Property settings
 	Score = 0;
-	GrenadeAmount = 5;
+	MaxHealth = 100.f;
+	CurrentHealth = MaxHealth;
+
+	// Weapon settings
+	MaxGrenade = 3;
+	MaxClip = 3;
+	MaxAid = 3;
+	GrenadeAmount = 0;
+	ClipAmount = 0;
+	AidAmount = 0;
+	HealValue = 50.f;
+
+	// Initialize fire rates
+	FireRate = 0.25f;
+	ThrowRate = 1.f;
+	ReloadRate = 1.f;
+	HealRate = 1.f;
+	bIsFiringWeapon = false;
+	bIsThrowingWeapon = false;
+	bIsReloading = false;
+	bIsHealing = false;
+	bLMBDown = false;
+
+	// Pickup settings
+	ActiveOverlappingPickup = nullptr;
+
+	bIsDied = false;
+	bIsPlayer = true;
+	bIsSliding = false;
 }
 
 void AFPSDemoCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	CurrentHealth = MaxHealth;
+
 	// Save third person camera boom socket offset
 	TPSocketOffset = TPBoom->SocketOffset;
 	// Set Spawn Collision Handling Override
@@ -93,6 +133,104 @@ void AFPSDemoCharacter::BeginPlay()
 			RightHandSocket->AttachActor(EquippedWeapon, GetMesh());
 		}
 	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Replicated Properties
+
+void AFPSDemoCharacter::GetLifetimeReplicatedProps(TArray <FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	//Replicate current health.
+	DOREPLIFETIME(AFPSDemoCharacter, CurrentHealth);
+	DOREPLIFETIME(AFPSDemoCharacter, GrenadeAmount);
+	DOREPLIFETIME(AFPSDemoCharacter, ClipAmount);
+	DOREPLIFETIME(AFPSDemoCharacter, AidAmount);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Health
+// TODO
+void AFPSDemoCharacter::OnHealthUpdate_Implementation()
+{
+	// Client-specific functionality
+	// Autonomous Proxy
+	//if (IsLocallyControlled())
+	//{
+	//	FString healthMessage = FString::Printf(TEXT("You now have %f health remaining."), CurrentHealth);
+	//	FString printMessage1 = FString::Printf(TEXT("Print by %s."), *GetFName().ToString());
+	//	GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Blue, healthMessage);
+	//	GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Yellow, printMessage1);
+
+	//	if (CurrentHealth <= 0)
+	//	{
+	//		FString deathMessage = FString::Printf(TEXT("You have been killed."));
+	//		FString printMessage2 = FString::Printf(TEXT("Print by %s."), *GetFName().ToString());
+	//		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, deathMessage);
+	//		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Yellow, printMessage2);
+	//	}
+	//}
+
+	// Server-specific functionality
+	// Authority
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		if (!bIsDied && CurrentHealth <= 0)
+		{
+			// Server-specific
+			//LoseGame();
+			if (GetLocalRole() == ROLE_Authority)
+			{
+				PlayMontageCast(DeathMontage);
+				bIsDied = true;
+			}
+			// Client-specific
+			LoseGameClient();
+
+			if (!bIsPlayer) return;
+			
+			AGameStateBase* const GameState = GetWorld() != NULL ? GetWorld()->GetGameState<AGameStateBase>() : NULL;
+			if (GameState)
+			{
+				TArray<APlayerState*> Players = GameState->PlayerArray;
+				for (const APlayerState* Player : Players)
+				{
+					APawn* Pawn = Player->GetPawn();
+					AFPSDemoCharacter* Char = Cast<AFPSDemoCharacter>(Pawn);
+					if (Char && Char != this && Char->bIsPlayer)
+					{
+						//Char->WinGame();
+						Char->WinGameClient();
+					}
+				}
+			}
+		}
+	}
+}
+
+void AFPSDemoCharacter::OnRep_CurrentHealth()
+{
+	// Ensure that each client responds the same way to the new CurrentHealth value
+	OnHealthUpdate();
+}
+
+void AFPSDemoCharacter::SetCurrentHealth(float healthValue)
+{
+	// Server functionality
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		CurrentHealth = FMath::Clamp(healthValue, 0.f, MaxHealth);
+		// Ensure server has calls to this function
+		OnHealthUpdate();
+	}
+}
+
+float AFPSDemoCharacter::TakeDamage(float DamageTaken, struct FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+	float damageApplied = CurrentHealth - DamageTaken;
+	PlayParticlesClient(HitParticles);
+	SetCurrentHealth(damageApplied);
+	return damageApplied;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -116,17 +254,12 @@ void AFPSDemoCharacter::IncrementScore(int32 Amount)
 // Fire
 void AFPSDemoCharacter::OnFire()
 {
-	if (EquippedWeapon && EquippedWeapon->Ammo > 0)
+	if (EquippedWeapon && EquippedWeapon->Ammo > 0 && BulletClass && !bIsFiringWeapon && !GetEquippedState() && !bIsSliding)
 	{
-		if (FireParticles)
-		{
-			UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), FireParticles, GetActorLocation(), FRotator(0.f), true);
-		}
-
-		if (FireSound)
-		{
-			UGameplayStatics::PlaySound2D(this, FireSound);
-		}
+		bLMBDown = true;
+		bIsFiringWeapon = true;
+		UWorld* World = GetWorld();
+		World->GetTimerManager().SetTimer(FiringTimer, this, &AFPSDemoCharacter::StopFire, FireRate, false);
 
 		// Play montage
 		UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
@@ -134,43 +267,54 @@ void AFPSDemoCharacter::OnFire()
 		{
 			AnimInstance->Montage_Play(FireMontage, 1.0f);
 		}
+		
+		// Decrement ammo of equipped weapon
+		EquippedWeapon->DecrementAmmo();
 
-		const FRotator SpawnRotation = GetControlRotation();
-		const FVector SpawnLocation = EquippedWeapon->Mesh->GetSocketLocation("Muzzle");
-
-		if (BulletClass)
-		{
-			// Set Spawn Collision Handling Override
-			FActorSpawnParameters ActorSpawnParams;
-
-			// Spawn the projectile at the ammo socket
-			GetWorld()->SpawnActor<ABullet>(BulletClass, SpawnLocation, SpawnRotation, ActorSpawnParams);
-
-			// Decrement ammo of equipped weapon
-			EquippedWeapon->DecrementAmmo();
-
-			if (EquippedWeapon->Ammo <= 0 && GrenadeAmount <= 0)
-			{
-				EndGame();
-			}
-		}
+		HandleFire();
 	}
+}
+
+void AFPSDemoCharacter::StopFire()
+{
+	bIsFiringWeapon = false;
+	if (bLMBDown)
+	{
+		OnFire();
+	}
+}
+
+void AFPSDemoCharacter::ReleaseFire()
+{
+	bLMBDown = false;
+}
+ 
+void AFPSDemoCharacter::HandleFire_Implementation()
+{
+	const FRotator SpawnRotation = GetControlRotation();
+	FVector SpawnLocation = EquippedWeapon->Mesh->GetSocketLocation("Muzzle") 
+		+ (GetControlRotation().Vector() * 100.0f) + (GetActorUpVector() * 50.0f);
+	if (!bIsPlayer)
+	{
+		SpawnLocation = EquippedWeapon->Mesh->GetSocketLocation("Muzzle");
+	}
+	// Set Spawn Collision Handling Override
+	FActorSpawnParameters ActorSpawnParams;
+	ActorSpawnParams.Instigator = GetInstigator();
+	ActorSpawnParams.Owner = this;
+
+	// Spawn the projectile at the ammo socket
+	GetWorld()->SpawnActor<ABullet>(BulletClass, SpawnLocation, SpawnRotation, ActorSpawnParams);
 }
 
 void AFPSDemoCharacter::ThrowGrenade()
 {
 
-	if (GrenadeAmount > 0)
+	if (GrenadeClass && GrenadeAmount > 0 && !bIsFiringWeapon && !GetEquippedState() && !bIsSliding)
 	{
-		if (ThrowParticles)
-		{
-			UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), ThrowParticles, GetActorLocation(), FRotator(0.f), true);
-		}
-
-		if (ThrowSound)
-		{
-			UGameplayStatics::PlaySound2D(this, ThrowSound);
-		}
+		bIsThrowingWeapon = true;
+		UWorld* World = GetWorld();
+		World->GetTimerManager().SetTimer(ThrowingTimer, this, &AFPSDemoCharacter::StopThrow, ThrowRate, false);
 
 		// Play montage
 		UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
@@ -179,26 +323,271 @@ void AFPSDemoCharacter::ThrowGrenade()
 			AnimInstance->Montage_Play(FireMontage, 1.0f);
 		}
 
-		const FRotator SpawnRotation = GetControlRotation();
-		const FVector SpawnLocation = EquippedWeapon->Mesh->GetSocketLocation("Muzzle");
+		HandleThrow();	
+	}
+}
 
-		if (GrenadeClass)
+void AFPSDemoCharacter::StopThrow()
+{
+	bIsThrowingWeapon = false;
+}
+
+void AFPSDemoCharacter::HandleThrow_Implementation()
+{
+	const FRotator SpawnRotation = GetControlRotation();
+	const FVector SpawnLocation = EquippedWeapon->Mesh->GetSocketLocation("Muzzle")
+		+ (GetControlRotation().Vector() * 100.0f) + (GetActorUpVector() * 50.0f);
+
+	// Set Spawn Collision Handling Override
+	FActorSpawnParameters ActorSpawnParams;
+	ActorSpawnParams.Instigator = GetInstigator();
+	ActorSpawnParams.Owner = this;
+
+	// Spawn the projectile at the ammo socket
+	GetWorld()->SpawnActor<AGrenade>(GrenadeClass, SpawnLocation, SpawnRotation, ActorSpawnParams);
+
+	// Decrement the replicated property GrenadeAmount.
+	DecrementGrenade();
+}
+
+void AFPSDemoCharacter::ReloadAmmo()
+{
+	if (ClipAmount > 0 && !GetEquippedState() && !bIsReloading && EquippedWeapon && EquippedWeapon->Ammo < EquippedWeapon->MaxAmmo && !bIsSliding)
+	{
+		bIsReloading = true;
+		PlayMontage(ReloadMontage);
+		PlaySound(ReloadSound);
+
+		// Run on server to decrement clip amount.
+		HandleReload();
+
+		// Ammo is local property, and is not necessary to be replicated.
+		EquippedWeapon->ReloadAmmo();
+		
+		// Stop in montage notify
+		//GetWorld()->GetTimerManager().SetTimer(ReloadTimer, this, &AFPSDemoCharacter::StopReload, ReloadRate, false);
+	}
+}
+
+void AFPSDemoCharacter::StopReload()
+{
+	bIsReloading = false;
+}
+
+// Server-RPCs
+void AFPSDemoCharacter::HandleReload_Implementation()
+{
+	// Decrement replicated property `ClipAmount` on the server.
+	DecrementClip();
+}
+
+void AFPSDemoCharacter::Heal()
+{
+	if (AidAmount > 0 && !GetEquippedState() && !bIsHealing && CurrentHealth < MaxHealth && !bIsSliding)
+	{
+		bIsHealing = true;
+		PlayMontage(HealMontage);
+		PlaySound(HealSound);
+		// Run on the server to decrement aid amount and increment health
+		HandleHeal();
+
+		// Stop in montage notify
+		//GetWorld()->GetTimerManager().SetTimer(HealTimer, this, &AFPSDemoCharacter::StopHeal, HealRate, false);
+	}
+}
+
+void AFPSDemoCharacter::StopHeal()
+{
+	bIsHealing = false;
+}
+
+void AFPSDemoCharacter::HandleHeal_Implementation()
+{
+	// Decrement replicated property `AidAmount` on the server.
+	DecrementAidBag();
+	// Set new health after heal.
+	float HealthApplied = CurrentHealth + HealValue;
+	SetCurrentHealth(HealthApplied);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Pickup
+void AFPSDemoCharacter::OnPickup()
+{
+
+	HandlePickup();
+}
+
+void AFPSDemoCharacter::HandlePickup_Implementation()
+//void AFPSDemoCharacter::HandlePickup()
+{
+	if (ActiveOverlappingPickup)
+	{
+		AClip* Clip = Cast<AClip>(ActiveOverlappingPickup);
+		if (Clip)
 		{
-			// Set Spawn Collision Handling Override
-			FActorSpawnParameters ActorSpawnParams;
-
-			// Spawn the projectile at the ammo socket
-			GetWorld()->SpawnActor<AGrenade>(GrenadeClass, SpawnLocation, SpawnRotation, ActorSpawnParams);
-
-			// Decrement ammo of grenade
-			GrenadeAmount--;
-
-			if (EquippedWeapon && EquippedWeapon->Ammo <= 0 && GrenadeAmount <= 0)
+			if (ClipAmount < MaxClip)
 			{
-				EndGame();
+				PlayParticlesClient(PickParticles);
+				PlaySoundClient(PickSound);
+				IncrementClip(Clip);
 			}
+			return;
+		}
+		AGrenBag* GrenBag = Cast<AGrenBag>(ActiveOverlappingPickup);
+		if (GrenBag)
+		{
+			if (GrenadeAmount < MaxGrenade)
+			{
+				PlayParticlesClient(PickParticles);
+				PlaySoundClient(PickSound);
+				IncrementGrenade(GrenBag);
+			}
+			return;
+		}
+		AAidBag* AidBag = Cast<AAidBag>(ActiveOverlappingPickup);
+		if (AidBag)
+		{
+			if (AidAmount < MaxAid)
+			{
+				PlayParticlesClient(PickParticles);
+				PlaySoundClient(PickSound);
+				IncrementAidBag(AidBag);
+			}
+			return;
 		}
 	}
+}
+
+//void AFPSDemoCharacter::IncrementClip_Implementation(AClip* Clip)
+void AFPSDemoCharacter::IncrementClip(AClip* Clip)
+{
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		ClipAmount++;
+		Clip->Destroy();
+		SetActiveOverlappingPickup(nullptr);
+	}
+
+}
+
+//void AFPSDemoCharacter::DecrementClip_Implementation()
+void AFPSDemoCharacter::DecrementClip()
+{
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		if (ClipAmount > 0)
+			ClipAmount--;
+	}
+}
+
+//void AFPSDemoCharacter::IncrementGrenade_Implementation(AGrenBag* GrenBag)
+void AFPSDemoCharacter::IncrementGrenade(AGrenBag* GrenBag)
+{
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		GrenadeAmount++;
+		GrenBag->Destroy();
+		SetActiveOverlappingPickup(nullptr);
+	}
+}
+
+//void AFPSDemoCharacter::DecrementGrenade_Implementation()
+void AFPSDemoCharacter::DecrementGrenade()
+{
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		if (GrenadeAmount > 0)
+			GrenadeAmount--;
+	}
+}
+
+//void AFPSDemoCharacter::IncrementAidBag_Implementation(AAidBag* AidBag)
+void AFPSDemoCharacter::IncrementAidBag(AAidBag* AidBag)
+{
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		AidAmount++;
+		AidBag->Destroy();
+		SetActiveOverlappingPickup(nullptr);
+	}
+}
+
+//void AFPSDemoCharacter::DecrementAidBag_Implementation()
+void AFPSDemoCharacter::DecrementAidBag()
+{
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		if (AidAmount > 0)
+			AidAmount--;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Utilities
+void AFPSDemoCharacter::PlayParticles(UParticleSystem* Particles)
+{
+	if (Particles)
+	{
+		UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), Particles, GetActorLocation(), FRotator(0.f), true);
+	}
+}
+
+void AFPSDemoCharacter::PlaySound(USoundCue* Sound)
+{
+	if (Sound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(GetWorld(), Sound, GetActorLocation());
+	}
+}
+
+void AFPSDemoCharacter::PlayMontage(UAnimMontage* Montage)
+{
+	UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+	if (AnimInstance && Montage)
+	{
+		AnimInstance->Montage_Play(Montage, 1.0f);
+	}
+}
+
+void AFPSDemoCharacter::PlayParticlesClient_Implementation(UParticleSystem* Particles)
+{
+	PlayParticles(Particles);
+}
+
+void AFPSDemoCharacter::PlaySoundClient_Implementation(USoundCue* Sound)
+{
+	PlaySound(Sound);
+}
+
+void AFPSDemoCharacter::PlayMontageClient_Implementation(UAnimMontage* Montage)
+{
+	PlayMontage(Montage);
+}
+
+void AFPSDemoCharacter::PlayMontageCast_Implementation(UAnimMontage* Montage)
+{
+	PlayMontage(Montage);
+}
+
+void AFPSDemoCharacter::WinGame_Implementation()
+{
+
+}
+
+void AFPSDemoCharacter::LoseGame_Implementation()
+{
+
+}
+
+void AFPSDemoCharacter::WinGameClient_Implementation()
+{
+	WinGame();
+}
+
+void AFPSDemoCharacter::LoseGameClient_Implementation()
+{
+	LoseGame();
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -208,7 +597,7 @@ void AFPSDemoCharacter::SetupPlayerInputComponent(class UInputComponent* PlayerI
 {
 	// Set up gameplay key bindings
 	check(PlayerInputComponent);
-	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
+	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &AFPSDemoCharacter::Jump);
 	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
 
 	PlayerInputComponent->BindAxis("MoveForward", this, &AFPSDemoCharacter::MoveForward);
@@ -226,39 +615,34 @@ void AFPSDemoCharacter::SetupPlayerInputComponent(class UInputComponent* PlayerI
 	PlayerInputComponent->BindTouch(IE_Pressed, this, &AFPSDemoCharacter::TouchStarted);
 	PlayerInputComponent->BindTouch(IE_Released, this, &AFPSDemoCharacter::TouchStopped);
 
-	// VR headset functionality
-	PlayerInputComponent->BindAction("ResetVR", IE_Pressed, this, &AFPSDemoCharacter::OnResetVR);
-
 	// Shift view mode
 	PlayerInputComponent->BindAction("ShiftView", IE_Pressed, this, &AFPSDemoCharacter::ShiftViewMode);
 
+	PlayerInputComponent->BindAction("Pick", IE_Pressed, this, &AFPSDemoCharacter::OnPickup);
 	PlayerInputComponent->BindAction("Fire", IE_Pressed, this, &AFPSDemoCharacter::OnFire);
+	PlayerInputComponent->BindAction("Fire", IE_Released, this, &AFPSDemoCharacter::ReleaseFire);
 	PlayerInputComponent->BindAction("Grenade", IE_Pressed, this, &AFPSDemoCharacter::ThrowGrenade);
-}
+	PlayerInputComponent->BindAction("Reload", IE_Pressed, this, &AFPSDemoCharacter::ReloadAmmo);
+	PlayerInputComponent->BindAction("Heal", IE_Pressed, this, &AFPSDemoCharacter::Heal);
 
-void AFPSDemoCharacter::OnResetVR()
-{
-	// If FPSDemo is added to a project via 'Add Feature' in the Unreal Editor the dependency on HeadMountedDisplay in FPSDemo.Build.cs is not automatically propagated
-	// and a linker error will result.
-	// You will need to either:
-	//		Add "HeadMountedDisplay" to [YourProject].Build.cs PublicDependencyModuleNames in order to build successfully (appropriate if supporting VR).
-	// or:
-	//		Comment or delete the call to ResetOrientationAndPosition below (appropriate if not supporting VR)
-	UHeadMountedDisplayFunctionLibrary::ResetOrientationAndPosition();
+
 }
 
 void AFPSDemoCharacter::TouchStarted(ETouchIndex::Type FingerIndex, FVector Location)
 {
-		Jump();
+	if (bIsDied || bIsSliding) return;
+	Jump();
 }
 
 void AFPSDemoCharacter::TouchStopped(ETouchIndex::Type FingerIndex, FVector Location)
 {
-		StopJumping();
+	if (bIsDied || bIsSliding) return;
+	StopJumping();
 }
 
 void AFPSDemoCharacter::ShiftViewMode()
 {
+	if (bIsDied || bIsSliding) return;
 	// Store current third person camera setting
 	CurCamSetting = FTPCamSetting(TPBoom->TargetArmLength, TPBoom->CameraLagSpeed, TPBoom->SocketOffset);
 
@@ -286,18 +670,21 @@ void AFPSDemoCharacter::ShiftViewMode()
 
 void AFPSDemoCharacter::TurnAtRate(float Rate)
 {
+	if (bIsDied || bIsSliding) return;
 	// calculate delta for this frame from the rate information
 	AddControllerYawInput(Rate * BaseTurnRate * GetWorld()->GetDeltaSeconds());
 }
 
 void AFPSDemoCharacter::LookUpAtRate(float Rate)
 {
+	if (bIsDied || bIsSliding) return;
 	// calculate delta for this frame from the rate information
 	AddControllerPitchInput(Rate * BaseLookUpRate * GetWorld()->GetDeltaSeconds());
 }
 
 void AFPSDemoCharacter::MoveForward(float Value)
 {
+	if (bIsDied || bIsSliding) return;
 	if ((Controller != nullptr) && (Value != 0.0f))
 	{
 		// find out which way is forward
@@ -312,6 +699,7 @@ void AFPSDemoCharacter::MoveForward(float Value)
 
 void AFPSDemoCharacter::MoveRight(float Value)
 {
+	if (bIsDied || bIsSliding) return;
 	if ( (Controller != nullptr) && (Value != 0.0f) )
 	{
 		// find out which way is right
@@ -323,4 +711,10 @@ void AFPSDemoCharacter::MoveRight(float Value)
 		// add movement in that direction
 		AddMovementInput(Direction, Value);
 	}
+}
+
+void AFPSDemoCharacter::Jump()
+{
+	if (bIsDied || bIsSliding) return;
+	Super::Jump();
 }

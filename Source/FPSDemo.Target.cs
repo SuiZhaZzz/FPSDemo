@@ -5,10 +5,10 @@ using System.Collections.Generic;
 
 public class FPSDemoTarget : TargetRules
 {
-	public FPSDemoTarget(TargetInfo Target) : base(Target)
+	public FPSDemoTarget( TargetInfo Target) : base(Target)
 	{
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
-		ExtraModuleNames.Add("FPSDemo");
+		ExtraModuleNames.AddRange( new string[] { "FPSDemo" } );
 	}
 }

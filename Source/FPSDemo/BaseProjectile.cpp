@@ -8,10 +8,16 @@
 #include "Components/StaticMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "FPSDemoCharacter.h"
+#include "GameFramework/DamageType.h"
+#include "Particles/ParticleSystem.h"
+#include "Particles/ParticleSystemComponent.h"
+#include "Sound/SoundCue.h"
+#include "BaseWeapon.h"
 
 // Sets default values
 ABaseProjectile::ABaseProjectile()
 {
+	bReplicates = true;
 	// Use a sphere as a simple collision representation
 	CollisionComp = CreateDefaultSubobject<USphereComponent>(TEXT("SphereComp"));
 	CollisionComp->InitSphereRadius(5.0f);
@@ -39,18 +45,32 @@ ABaseProjectile::ABaseProjectile()
 	LifeSpan = 3.0f;
 	InitialLifeSpan = LifeSpan;
 
-	ACharacter* PlayerCharacter = UGameplayStatics::GetPlayerCharacter(GetWorld(), 0);
-	if (PlayerCharacter)
-	{
-		Character = Cast<AFPSDemoCharacter>(PlayerCharacter);
-	}
+	DamageType = UDamageType::StaticClass();
+	Damage = 10.0f;
 }
 
 // Called when the game starts or when spawned
 void ABaseProjectile::BeginPlay()
 {
 	Super::BeginPlay();
-	
+	AActor* Actor = GetOwner();
+	if (Actor)
+	{
+		AFPSDemoCharacter* Char = Cast<AFPSDemoCharacter>(Actor);
+		if (Char && Char->EquippedWeapon)
+		{
+			FVector Location = Char->EquippedWeapon->Mesh->GetSocketLocation("Muzzle");
+			if (FireParticles)
+			{
+				UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), FireParticles, Location, FRotator(0.f), true);
+			}
+
+			if (FireSound)
+			{
+				UGameplayStatics::PlaySoundAtLocation(GetWorld(), FireSound, Location);
+			}
+		}
+	}
 }
 
 // Called every frame
@@ -60,3 +80,55 @@ void ABaseProjectile::Tick(float DeltaTime)
 
 }
 
+
+
+void ABaseProjectile::Destroyed()
+{
+//	if (HitParticles)
+//	{
+//		UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), HitParticles, GetActorLocation(), FRotator(0.f), true);
+//	}
+//
+//	if (HitSound)
+//	{
+//		//UGameplayStatics::PlaySound2D(this, HitSound);
+//		UGameplayStatics::PlaySoundAtLocation(GetWorld(), HitSound, GetActorLocation());
+//	}
+}
+
+void ABaseProjectile::PlayParticles(UParticleSystem* Particles)
+{
+	if (Particles)
+	{
+		UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), Particles, GetActorLocation(), FRotator(0.f), true);
+	}
+}
+
+void ABaseProjectile::PlaySound(USoundCue* Sound)
+{
+	if (Sound)
+	{
+		//UGameplayStatics::PlaySound2D(this, HitSound);
+		UGameplayStatics::PlaySoundAtLocation(GetWorld(), Sound, GetActorLocation());
+	}
+}
+
+void ABaseProjectile::PlayParticlesReliable_Implementation(UParticleSystem* Particles)
+{
+	PlayParticles(Particles);
+}
+
+void ABaseProjectile::PlayParticlesUnreliable_Implementation(UParticleSystem* Particles)
+{
+	PlayParticles(Particles);
+}
+
+void ABaseProjectile::PlaySoundReliable_Implementation(USoundCue* Sound)
+{
+	PlaySound(Sound);
+}
+
+void ABaseProjectile::PlaySoundUnreliable_Implementation(USoundCue* Sound)
+{
+	PlaySound(Sound);
+}

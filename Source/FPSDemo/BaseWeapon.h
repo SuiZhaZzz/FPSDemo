@@ -20,9 +20,14 @@ public:
 	class USkeletalMeshComponent* Mesh;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Weapon)
+	int32 MaxAmmo;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Weapon)
 	int32 Ammo;
 
 	void DecrementAmmo();
+
+	void ReloadAmmo();
 
 protected:
 	// Called when the game starts or when spawned

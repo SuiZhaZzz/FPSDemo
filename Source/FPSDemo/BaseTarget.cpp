@@ -8,6 +8,7 @@
 // Sets default values
 ABaseTarget::ABaseTarget()
 {
+	bReplicates = true;
 	PrimaryActorTick.bCanEverTick = true;
 
 	Mesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Mesh"));
@@ -23,6 +24,7 @@ ABaseTarget::ABaseTarget()
 	C = 0.f;
 
 	BossScore = 5;
+	bIsRotating = true;
 }
 
 // Called when the game starts or when spawned
@@ -35,45 +37,45 @@ void ABaseTarget::BeginPlay()
 void ABaseTarget::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-	
-	// Set rotation
-	FRotator Rotation = GetActorRotation();
-	Rotation.Yaw += DeltaTime * 45.f;
-	SetActorRotation(Rotation);
-
-	// Set location
-	FVector NewLoacation = GetActorLocation();
-	if (RunningTime >= 2 * PI)
+	if (bIsRotating)
 	{
-		RunningTime = 0;
-	}
-	float DeltaHeight = A * FMath::Sin(B * RunningTime + C);
-	RunningTime += DeltaTime;
+		// Set rotation
+		FRotator Rotation = GetActorRotation();
+		Rotation.Yaw += DeltaTime * 45.f;
+		SetActorRotation(Rotation);
 
-	NewLoacation.Z += DeltaHeight /** 20.f*/;
-	SetActorLocation(NewLoacation);
+		// Set location
+		FVector NewLoacation = GetActorLocation();
+		if (RunningTime >= 2 * PI)
+		{
+			RunningTime = 0;
+		}
+		float DeltaHeight = A * FMath::Sin(B * RunningTime + C);
+		RunningTime += DeltaTime;
+
+		NewLoacation.Z += DeltaHeight /** 20.f*/;
+		SetActorLocation(NewLoacation);
+	}
+
 }
 
-void ABaseTarget::DestroyTarget(AFPSDemoCharacter* Causer)
+void ABaseTarget::DestroyTarget(AActor* Causer)
 {
-	bDied = true;
-
-	// Increment the causer's score
-	Causer->IncrementScore(Score);
-
-	// Call destroy after death time
-	GetWorldTimerManager().SetTimer(DeathTimer, this, &ABaseTarget::Disappear, DeathTime);
-	
-	if (Causer->Score >= BossScore)
+	if (Causer)
 	{
-		// Set Spawn Collision Handling Override
-		FActorSpawnParameters ActorSpawnParams;
-
-		// Spawn the boss
-		if (BossClass)
+		AFPSDemoCharacter* Char = Cast<AFPSDemoCharacter>(Causer);
+		if (Char)
 		{
-			GetWorld()->SpawnActor<ABaseTarget>(BossClass, GetActorLocation() + FVector(10.f, 0.f, 0.f), GetActorRotation(), ActorSpawnParams);
+			// Increment the causer's score
+			Char->IncrementScore(Score);
 		}
+	}
+
+	if (bIsRotating)
+	{
+		bDied = true;
+		// Call destroy after death time
+		GetWorldTimerManager().SetTimer(DeathTimer, this, &ABaseTarget::Disappear, DeathTime);
 	}
 
 }

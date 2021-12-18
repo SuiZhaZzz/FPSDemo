@@ -30,6 +30,8 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Mesh)
 	bool bDied;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Mesh)
+	bool bIsRotating;
 
 	float RunningTime;
 
@@ -55,7 +57,7 @@ public:
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
 
-	void DestroyTarget(class AFPSDemoCharacter* Causer);
+	void DestroyTarget(AActor* Causer);
 
 	// Wrap destroy method
 	void Disappear();

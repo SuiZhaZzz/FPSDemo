@@ -8,6 +8,9 @@
 #include "Kismet/GameplayStatics.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "FPSDemoCharacter.h"
+#include "GameFramework/GameStateBase.h"
+#include "GameFramework/PlayerState.h"
 
 AGrenade::AGrenade()
 {
@@ -26,36 +29,35 @@ AGrenade::AGrenade()
 	ForceStrength = 2000.f;
 
 	OverlapCollisionComp->InitSphereRadius(ForceRadius);
-
+	Damage = 10.f;
 }
 
 // Called when the game starts or when spawned
 void AGrenade::BeginPlay()
 {
 	Super::BeginPlay();
-	// Triggered after trigger time
-	GetWorldTimerManager().SetTimer(TriggerTimer, this, &AGrenade::Trigger, TriggerTime);
+	// Server-specific
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		// Triggered after trigger time
+		GetWorldTimerManager().SetTimer(TriggerTimer, this, &AGrenade::Trigger, TriggerTime);
+	}
 }
 
 void AGrenade::Trigger()
 {
-	if (HitParticles)
-	{
-		UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), HitParticles, GetActorLocation(), FRotator(0.f), true);
-	}
-
-	if (HitSound)
-	{
-		UGameplayStatics::PlaySound2D(this, HitSound);
-	}
+	// Multicast must be called from server
+	PlayParticlesReliable(HitParticles);
+	PlaySoundReliable(HitSound);
 
 	// Get overlapping actors by collision component
 	TArray<AActor*> OverlapActors;
 	// Filter target
 	OverlapCollisionComp->GetOverlappingActors(OverlapActors, ABaseTarget::StaticClass());
+	UE_LOG(LogTemp, Warning, TEXT("Num: %d"), OverlapActors.Num());
 
-	//UE_LOG(LogTemp, Warning, TEXT("OverlapActors: %d"), OverlapActors.Num());
 
+	// Target-specific
 	// Add radial force for each overlapping target
 	for (AActor* Actor : OverlapActors)
 	{
@@ -72,8 +74,14 @@ void AGrenade::Trigger()
 				MeshComp->AddRadialImpulse(GetActorLocation(), ForceRadius, ForceStrength, ERadialImpulseFalloff::RIF_Constant, false);
 			}
 
-			Target->DestroyTarget(Character);
+			AActor* OwingActor = GetOwner();
+			Target->DestroyTarget(OwingActor);
 		}
 	}
+
+	// Character-specific
+	TArray<AActor*> IgnoreActors;
+	UGameplayStatics::ApplyRadialDamage(GetWorld(), Damage, GetActorLocation(), ForceRadius, DamageType, IgnoreActors, this);
+
 	Destroy();
 }
