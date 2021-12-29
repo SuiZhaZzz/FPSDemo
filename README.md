@@ -1,10 +1,11 @@
-# FPSDemo
+﻿# FPSDemo
 ## Release V3.0.0 文件说明
 1. FPSDemo.zip 游戏工程文件
 2. Packaged.zip 游戏打包文件
 ## 打开服务器与客户端
-1. 首先打开'Packaged/WindowsServer/FPSDemoServer.exe -MainMap'打开独立服务器
-2. 其次分别打开两个'Packaged/WindowsNoEditor/FPSDemo.exe'加入游戏
+1. 首先打开'Packaged/WindowsServer'，为'FPSDemoServer.exe'创建快捷方式，重命名为'FPSDemoServer.exe -MainMap'，并打开属性在目标后面添加' -log'
+2. 然后打开'Packaged/WindowsServer/FPSDemoServer.exe -MainMap'打开独立服务器
+3. 其次分别打开两个'Packaged/WindowsNoEditor/FPSDemo.exe'加入游戏
 ## 游戏流程
 1. 首先进行双人联机对战，击败对手，拾取奖励
 2. 胜利者进行接下来的游戏，击败机器人，挑战机械Boss
